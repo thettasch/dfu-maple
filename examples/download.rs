@@ -18,11 +18,16 @@ pub struct Cli {
     #[clap(short, long)]
     reset: bool,
 
+    /// Reset serial port
+    #[clap(short, long)]
+    serial_port: Option<String>,
+
     /// Specify Vendor/Product ID(s) of DFU device.
     #[clap(
         long,
         short,
         parse(try_from_str = Self::parse_vid_pid), name = "vendor>:<product",
+        default_value = "1EAF:0003",
     )]
     device: (u16, u16),
 
@@ -31,7 +36,7 @@ pub struct Cli {
     intf: u8,
 
     /// Specify the Altsetting of the DFU Interface by number.
-    #[clap(long, short, default_value = "0")]
+    #[clap(long, short, default_value = "2")]
     alt: u8,
 
     /// Enable verbose logs.
@@ -43,12 +48,15 @@ pub struct Cli {
     override_address: Option<u32>,
 }
 
+
+
 impl Cli {
     pub fn run(self) -> Result<()> {
         let Cli {
             path,
             wait,
             reset,
+            serial_port,
             device,
             intf,
             alt,
@@ -61,6 +69,26 @@ impl Cli {
             simplelog::LevelFilter::Info
         };
         simplelog::SimpleLogger::init(log_level, Default::default())?;
+        
+        if let Some(serial_port) = &serial_port {
+            // println!("Reseting MCU at {serial_port}");
+            let bar = indicatif::ProgressBar::new_spinner();
+            bar.set_message(format!("Reseting MCU at {serial_port}"));
+            bar.tick();
+            match reset_mcu(&serial_port) {
+                Ok(()) => {
+                    for _ in 0..3 {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        bar.tick();
+                    }
+                }
+                Err(e) => {
+                    bar.set_message(format!("Failed to reset MCU at {serial_port}: {e}"));
+                }
+            }
+            bar.finish();
+        }
+
         let (vid, pid) = device;
         let context = rusb::Context::new()?;
         let mut file = std::fs::File::open(path).context("could not open firmware file")?;
@@ -115,8 +143,29 @@ impl Cli {
 
         match device.download(file, file_size) {
             Ok(_) => (),
-            Err(Error::LibUsb(..)) if bar.is_finished() => {
-                println!("USB error after upload; Device reset itself?");
+            Err(Error::LibUsb(e)) if bar.is_finished() => {
+
+                device.usb_reset()?;
+
+                if let Some(serial_port) = &serial_port {
+
+                    let bar = indicatif::ProgressBar::new_spinner();
+                    bar.set_message(format!("Waiting for {serial_port} to come up "));
+                    for _ in 0..20 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        bar.tick();
+
+                        if let Ok(r) = serialport::available_ports() {
+                            let r :Vec<String> = r.into_iter().map(|i| i.port_name).collect();
+                            if r.contains(&serial_port) {
+                                bar.set_message(format!("MCU at {serial_port} is back online"));
+                                bar.finish();
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                println!("USB error after upload; Device reset itself? {e}");
                 return Ok(());
             }
             e => return e.context("could not write firmware to the device"),
@@ -128,7 +177,7 @@ impl Cli {
             // a usb reset. So send a detach blindly...
             //
             // This matches the behaviour of dfu-util so should be safe
-            let _ = device.detach();
+            // let _ = device.detach();
             println!("Resetting device");
             device.usb_reset()?;
         }

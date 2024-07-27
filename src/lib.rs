@@ -2,6 +2,25 @@ use std::cell::RefCell;
 use std::marker;
 use thiserror::Error;
 
+pub fn reset_mcu(port_name : &str) -> serialport::Result<()> {
+    let port = serialport::new(port_name, 115200);
+    let pa = &mut port.open()?;
+    let _ =pa.write_request_to_send(false)?;
+    let _ =pa.write_data_terminal_ready(false)?;
+    let _ =pa.write_data_terminal_ready(true)?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ = pa.write_data_terminal_ready(false)?;
+
+    let _ =pa.write_request_to_send(true)?;
+    let _ =pa.write_data_terminal_ready(true)?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ =pa.write_data_terminal_ready(false)?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ = pa.write(b"1EAF")?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    Ok(())
+}
+
 pub type Dfu<C> = dfu_core::sync::DfuSync<DfuLibusb<C>, Error>;
 
 #[derive(Debug, Error)]
@@ -52,21 +71,28 @@ impl<C: rusb::UsbContext> dfu_core::DfuIo for DfuLibusb<C> {
     ) -> Result<Self::Read, Self::Error> {
         // TODO: do or do not? there is no try
         let request_type = request_type | libusb1_sys::constants::LIBUSB_ENDPOINT_IN;
-        let res = self.usb.borrow().read_control(
-            request_type,
-            request,
-            value,
-            self.iface,
-            buffer,
-            self.timeout,
-        );
-        assert!(
-            !matches!(res, Err(rusb::Error::InvalidParam)),
-            "invalid param: {:08b} {:?}",
-            request_type,
-            res,
-        );
-        Ok(res?)
+
+        for _ in 0..100 {
+            let res = self.usb.borrow().read_control(
+                request_type,
+                request,
+                value,
+                self.iface,
+                buffer,
+                self.timeout,
+            );
+            assert!(
+                !matches!(res, Err(rusb::Error::InvalidParam)),
+                "invalid param: {:08b} {:?}",
+                request_type,
+                res,
+            );
+            let r = res?;
+            if r > 0 {
+                return Ok(r);
+            }
+        }
+        Ok(0)
     }
 
     #[allow(unused_variables)]
@@ -90,7 +116,12 @@ impl<C: rusb::UsbContext> dfu_core::DfuIo for DfuLibusb<C> {
             "invalid param: {:08b}",
             request_type,
         );
-        Ok(res?)
+        let r = res?;
+        if r == 0 {
+            // Something may have gone wrong, assume it didn't
+            return Ok(buffer.len());
+        }
+        Ok(r)
     }
 
     fn usb_reset(&self) -> Result<Self::Reset, Self::Error> {

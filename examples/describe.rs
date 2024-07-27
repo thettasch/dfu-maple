@@ -9,12 +9,19 @@ pub struct Cli {
         long,
         short,
         parse(try_from_str = Self::parse_vid_pid), name = "vendor>:<product",
+        default_value = "1EAF:0003",
     )]
     device: (u16, u16),
 
     /// Specify the DFU Interface number.
     #[clap(long, short, default_value = "0")]
     intf: u8,
+
+    
+    /// Reset serial port
+    #[clap(short, long)]
+    serial_port: Option<String>,
+
 
     /// Specify the Altsetting of the DFU Interface by number.
     #[clap(long, short, default_value = "0")]
@@ -31,6 +38,7 @@ impl Cli {
             device,
             intf,
             alt,
+            serial_port,
             verbose,
         } = self;
         let log_level = if verbose {
@@ -39,6 +47,26 @@ impl Cli {
             simplelog::LevelFilter::Info
         };
         simplelog::SimpleLogger::init(log_level, Default::default())?;
+
+        if let Some(serial_port) = &serial_port {
+            // println!("Reseting MCU at {serial_port}");
+            let bar = indicatif::ProgressBar::new_spinner();
+            bar.set_message(format!("Reseting MCU at {serial_port}"));
+            bar.tick();
+            match reset_mcu(&serial_port) {
+                Ok(()) => {
+                    for _ in 0..3 {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        bar.tick();
+                    }
+                }
+                Err(e) => {
+                    bar.set_message(format!("Failed to reset MCU at {serial_port}: {e}"));
+                }
+            }
+            bar.finish();
+        }
+
         let (vid, pid) = device;
         let context = rusb::Context::new()?;
 

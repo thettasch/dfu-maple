@@ -167,8 +167,34 @@ impl Cli {
                 }
                 println!("USB error after upload; Device reset itself? {e}");
                 return Ok(());
+            },
+            Err(Error::Dfu(dfu_core::Error::InvalidState { got: dfu_core::State::DfuManifestWaitReset, expected: _ })) if bar.is_finished() => {
+                let _ = device.usb_reset();
+
+                if let Some(serial_port) = &serial_port {
+
+                    let bar = indicatif::ProgressBar::new_spinner();
+                    bar.set_message(format!("Waiting for {serial_port} to come up "));
+                    for _ in 0..20 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        bar.tick();
+
+                        if let Ok(r) = serialport::available_ports() {
+                            let r :Vec<String> = r.into_iter().map(|i| i.port_name).collect();
+                            if r.contains(&serial_port) {
+                                bar.set_message(format!("MCU at {serial_port} is back online"));
+                                bar.finish();
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                println!("Unexpected DfuManifestWaitReset could not be handled");
+                return Ok(());
             }
-            e => return e.context("could not write firmware to the device"),
+            e => {
+                return e.context("could not write firmware to the device")
+            },
         }
 
         if reset {
